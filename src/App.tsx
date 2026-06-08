@@ -8,6 +8,7 @@ import AlertIntegrations from './components/AlertIntegrations';
 import AiConsultingPanel from './components/AiConsultingPanel';
 import FinOpsSimulation from './components/FinOpsSimulation';
 import RenewalTimeline from './components/RenewalTimeline';
+import WhitelistConfig from './components/WhitelistConfig';
 
 import { 
   LayoutDashboard, 
@@ -293,12 +294,58 @@ export default function App() {
     return processInitialContracts(initialContracts);
   });
 
+  const [dbConfigured, setDbConfigured] = useState<boolean>(false);
+  const [isLoadingDb, setIsLoadingDb] = useState<boolean>(true);
+
+  // Sync / check database on mount
+  useEffect(() => {
+    async function checkDbAndSyncContracts() {
+      setIsLoadingDb(true);
+      try {
+        // 1. Verify if Postgres Neon is connected in this Vercel environment
+        const statusRes = await fetch('/api/database/status');
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setDbConfigured(statusData.configured);
+          
+          if (statusData.configured) {
+            // 2. Fetch latest contracts from PostgreSQL
+            const contractsRes = await fetch('/api/contracts');
+            if (contractsRes.ok) {
+              const dbContracts = await contractsRes.json();
+              if (dbContracts && dbContracts.length > 0) {
+                setContracts(dbContracts);
+                if (dbContracts[0]?.id) {
+                  setSelectedContractId(dbContracts[0].id);
+                }
+              } else {
+                // If DB is configured but empty (e.g. first run), seed current contracts list to Postgres
+                for (const c of contracts) {
+                  await fetch('/api/contracts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contract: c })
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("⚠️ [Postgres] Servidor offline ou rota indisponível. Rodando puramente de forma local.", err);
+      } finally {
+        setIsLoadingDb(false);
+      }
+    }
+    checkDbAndSyncContracts();
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('suprema_contracts', JSON.stringify(contracts));
   }, [contracts]);
 
   const [selectedContractId, setSelectedContractId] = useState<string | null>(initialContracts[0]?.id || null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'ai' | 'simulation' | 'timeline' | 'alerts'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'ai' | 'simulation' | 'timeline' | 'alerts' | 'whitelist'>('dashboard');
   const [activeKpiFilter, setActiveKpiFilter] = useState<'alertas' | 'desperdicio' | 'aproveitamento' | 'custo' | null>(null);
   
   const [confirmModal, setConfirmModal] = useState<{
@@ -351,26 +398,50 @@ export default function App() {
     'colaborador@suprema.io',
   ], []);
 
-  const handleLocalSignIn = (email: string, role: 'admin' | 'reader') => {
+  const handleLocalSignIn = async (email: string, role: 'admin' | 'reader') => {
     const formattedEmail = (email || '').trim().toLowerCase();
-    
-    // Validar se o e-mail está na lista de e-mails permitidos ou se pertence ao domínio @suprema.io
-    const isAllowed = ALLOWED_EMAILS.includes(formattedEmail) || formattedEmail.endsWith('@suprema.io');
-    
-    if (!isAllowed) {
-      setLoginError('Acesso Negado: Este e-mail não foi previamente autorizado para acessar o sistema.');
-      return;
-    }
-
     setLoginError('');
-    const newSession = {
-      isLoggedIn: true,
-      userEmail: formattedEmail,
-      userRole: role
-    };
-    setSession(newSession);
-    localStorage.setItem('suprema_user_session', JSON.stringify(newSession));
-    setIsLoginModalOpen(false);
+    
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: formattedEmail })
+      });
+
+      const data = await response.json();
+      if (response.ok && data.allowed) {
+        setLoginError('');
+        const newSession = {
+          isLoggedIn: true,
+          userEmail: data.email,
+          userRole: data.role as 'admin' | 'reader'
+        };
+        setSession(newSession);
+        localStorage.setItem('suprema_user_session', JSON.stringify(newSession));
+        setIsLoginModalOpen(false);
+      } else {
+        setLoginError(data.error || 'Acesso Negado: E-mail não autorizado.');
+      }
+    } catch (err: any) {
+      console.warn("⚠️ Servidor indisponível no momento. Fazendo login de demonstração local offline...", err);
+      // Fallback matching what was there before
+      const isAllowed = ALLOWED_EMAILS.includes(formattedEmail) || formattedEmail.endsWith('@suprema.io');
+      if (!isAllowed) {
+        setLoginError('Acesso Negado: Este e-mail não foi previamente autorizado para acessar o sistema.');
+        return;
+      }
+
+      setLoginError('');
+      const newSession = {
+        isLoggedIn: true,
+        userEmail: formattedEmail,
+        userRole: role
+      };
+      setSession(newSession);
+      localStorage.setItem('suprema_user_session', JSON.stringify(newSession));
+      setIsLoginModalOpen(false);
+    }
   };
 
   const handleLocalSignOut = () => {
@@ -477,27 +548,55 @@ export default function App() {
     }, 0);
   }, [contracts]);
 
-  // Handle spreadsheet updates (Client-only / Local-first)
+  // Handle spreadsheet updates (Client-first, live-synced to Neon Postgres)
   const handleAddContract = async (newContract: Contract) => {
     setContracts(prev => [newContract, ...prev]);
     setSelectedContractId(newContract.id);
+    
+    try {
+      await fetch('/api/contracts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract: newContract })
+      });
+    } catch (e) {
+      console.warn("⚠️ Falha ao salvar contrato no Postgres remoto:", e);
+    }
   };
 
   const handleUpdateContract = async (updated: Contract) => {
     setContracts(prev => prev.map(c => c.id === updated.id ? updated : c));
+    
+    try {
+      await fetch('/api/contracts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract: updated })
+      });
+    } catch (e) {
+      console.warn("⚠️ Falha ao atualizar contrato no Postgres remoto:", e);
+    }
   };
 
   const handleDeleteContract = (contractId: string) => {
     setConfirmModal({
       isOpen: true,
       title: 'Excluir Contrato',
-      message: 'Tem certeza que deseja remover este contrato da sua planilha? O progresso será salvo localmente.',
+      message: 'Tem certeza que deseja remover este contrato da sua planilha? O progresso será excluído localmente e no banco Postgres.',
       onConfirm: async () => {
         setContracts(prev => prev.filter(c => c.id !== contractId));
         if (selectedContractId === contractId) {
           setSelectedContractId(null);
         }
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
+
+        try {
+          await fetch(`/api/contracts/${contractId}`, {
+            method: 'DELETE'
+          });
+        } catch (e) {
+          console.warn("⚠️ Falha ao excluir contrato no Postgres remoto:", e);
+        }
       }
     });
   };
@@ -506,21 +605,54 @@ export default function App() {
     setConfirmModal({
       isOpen: true,
       title: 'Restaurar Dados de Fábrica',
-      message: 'Deseja restaurar a planilha com os dados corporativos iniciais de fábrica? Todo o seu progresso local será restaurado para os padrões iniciais de TI.',
+      message: 'Deseja restaurar a planilha com os dados corporativos iniciais? Todo o progresso será redefinido localmente e no Postgres remoto.',
       onConfirm: async () => {
         const initial = processInitialContracts(initialContracts);
         setContracts(initial);
         setSelectedContractId(initial[0]?.id || null);
         setConfirmModal(prev => ({ ...prev, isOpen: false }));
+
+        try {
+          if (dbConfigured) {
+            // First clear all existing from DB
+            for (const c of contracts) {
+              await fetch(`/api/contracts/${c.id}`, { method: 'DELETE' });
+            }
+            // Seed back initial
+            for (const c of initial) {
+              await fetch('/api/contracts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contract: c })
+              });
+            }
+          }
+        } catch (e) {
+          console.warn("⚠️ Falha ao redefinir contratos no Postgres remoto:", e);
+        }
       }
     });
   };
 
-  const handleImportContracts = (imported: Contract[]) => {
+  const handleImportContracts = async (imported: Contract[]) => {
     if (imported && imported.length > 0) {
       setContracts(imported);
       if (imported[0]?.id) {
         setSelectedContractId(imported[0].id);
+      }
+
+      try {
+        if (dbConfigured) {
+          for (const c of imported) {
+            await fetch('/api/contracts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contract: c })
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("⚠️ Falha ao importar contratos no Postgres remoto:", e);
       }
     }
   };
@@ -744,6 +876,29 @@ export default function App() {
                 </span>
               )}
             </button>
+
+            {isLoggedIn && (
+              <button
+                id="tab-whitelist"
+                onClick={() => setActiveTab('whitelist')}
+                style={activeTab === 'whitelist' ? { backgroundImage: `linear-gradient(to right, ${themeStyles.gradientFromColor}, ${themeStyles.gradientToColor})`, boxShadow: `0 6px 15px ${themeStyles.brand}30` } : {}}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                  activeTab === 'whitelist'
+                    ? 'text-white shadow-lg'
+                    : isDarkMode 
+                      ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
+                      : 'text-slate-655 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Users className="h-4 w-4" />
+                <span>Controle de Acesso (Whitelist)</span>
+                {!isAdminUser && (
+                  <span title="Acesso Administrador requerido para alteração">
+                    <Lock className="h-3 w-3 text-amber-550 shrink-0 ml-1" />
+                  </span>
+                )}
+              </button>
+            )}
           </div>
 
           <div className={`text-right text-xs font-sans ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
@@ -920,6 +1075,17 @@ export default function App() {
                 isLoggedIn={isLoggedIn}
               />
             )}
+          </div>
+        )}
+
+        {/* Tab 6 Content: Whitelist Management (Neon/Vercel Postgres) */}
+        {activeTab === 'whitelist' && (
+          <div className="animate-fade-in">
+            <WhitelistConfig 
+              isDarkMode={isDarkMode} 
+              themeStyles={themeStyles} 
+              userRole={userRole} 
+            />
           </div>
         )}
 

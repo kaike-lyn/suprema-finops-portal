@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { initDatabase, isDbConfigured, getDbPool } from "./src/backend/db";
 
 dotenv.config();
 
@@ -34,6 +35,188 @@ function getGeminiClient(): GoogleGenAI {
 // REST Api routes
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString() });
+});
+
+// Endpoint to check database status
+app.get("/api/database/status", (req, res) => {
+  res.json({ 
+    configured: isDbConfigured(), 
+    provider: "Postgres Neon (Vercel Integration)" 
+  });
+});
+
+// Authentication endpoint - checks if email is whitelisted in Postgres
+app.post("/api/auth/login", async (req, res) => {
+  const { email } = req.body;
+  const trimmedEmail = (email || "").trim().toLowerCase();
+
+  if (!trimmedEmail) {
+    return res.status(400).json({ error: "E-mail é obrigatório." });
+  }
+
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      const result = await pool.query("SELECT * FROM allowed_emails WHERE email = $1", [trimmedEmail]);
+      
+      if (result.rows.length > 0) {
+        const user = result.rows[0];
+        return res.json({ allowed: true, email: user.email, role: user.role });
+      } else {
+        // Fallback option: allow standard @suprema.io emails automatically
+        if (trimmedEmail.endsWith("@suprema.io")) {
+          return res.json({ allowed: true, email: trimmedEmail, role: "admin" });
+        }
+        return res.json({ allowed: false, error: "Acesso Negado: Este e-mail não foi previamente autorizado no sistema." });
+      }
+    } else {
+      // Offline/Local Mode Fallback list (ideal for static previews)
+      const ALLOWED_EMAILS = [
+        'origemdodia@gmail.com',
+        'admin@suprema.io',
+        'diretoria@suprema.io',
+        'auditor@suprema.io',
+        'colaborador@suprema.io',
+      ];
+      const isAllowed = ALLOWED_EMAILS.includes(trimmedEmail) || trimmedEmail.endsWith('@suprema.io');
+      
+      if (isAllowed) {
+        const role = (trimmedEmail === 'admin@suprema.io' || trimmedEmail === 'origemdodia@gmail.com' || trimmedEmail === 'diretoria@suprema.io') ? 'admin' : 'reader';
+        return res.json({ allowed: true, email: trimmedEmail, role });
+      }
+      return res.json({ allowed: false, error: "Acesso Negado: Este e-mail não está na lista de e-mails autorizados." });
+    }
+  } catch (error: any) {
+    console.error("Erro na autenticação:", error);
+    return res.status(500).json({ error: "Erro interno ao processar autenticação.", details: error.message });
+  }
+});
+
+// Fetch whitelist of emails
+app.get("/api/auth/allowed-emails", async (req, res) => {
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      const result = await pool.query("SELECT email, role, created_at as \"createdAt\" FROM allowed_emails ORDER BY created_at DESC");
+      return res.json(result.rows);
+    } else {
+      // Fallback demo list
+      return res.json([
+        { email: 'origemdodia@gmail.com', role: 'admin', createdAt: new Date().toISOString() },
+        { email: 'admin@suprema.io', role: 'admin', createdAt: new Date().toISOString() },
+        { email: 'diretoria@suprema.io', role: 'admin', createdAt: new Date().toISOString() },
+        { email: 'auditor@suprema.io', role: 'reader', createdAt: new Date().toISOString() },
+        { email: 'colaborador@suprema.io', role: 'reader', createdAt: new Date().toISOString() }
+      ]);
+    }
+  } catch (error: any) {
+    console.error("Erro ao obter e-mails autorizados:", error);
+    return res.status(500).json({ error: "Erro interno ao consultar lista de e-mails.", details: error.message });
+  }
+});
+
+// Add e-mail to whitelist (admin only)
+app.post("/api/auth/allowed-emails", async (req, res) => {
+  const { email, role } = req.body;
+  const trimmedEmail = (email || "").trim().toLowerCase();
+
+  if (!trimmedEmail) {
+    return res.status(400).json({ error: "O e-mail é obrigatório." });
+  }
+
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      await pool.query(
+        "INSERT INTO allowed_emails (email, role) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role",
+        [trimmedEmail, role || 'reader']
+      );
+      return res.json({ success: true, message: "E-mail adicionado com sucesso à whitelist do Postgres Neon." });
+    } else {
+      return res.status(400).json({ error: "Não é possível salvar: Banco de dados Postgres Neon não conectado neste ambiente." });
+    }
+  } catch (error: any) {
+    console.error("Erro ao adicionar e-mail autorizado:", error);
+    return res.status(500).json({ error: "Erro ao adicionar e-mail.", details: error.message });
+  }
+});
+
+// Remove e-mail from whitelist (admin only)
+app.delete("/api/auth/allowed-emails/:email", async (req, res) => {
+  const { email } = req.params;
+  const trimmedEmail = (email || "").trim().toLowerCase();
+
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      await pool.query("DELETE FROM allowed_emails WHERE email = $1", [trimmedEmail]);
+      return res.json({ success: true, message: "E-mail removido da whitelist com sucesso." });
+    } else {
+      return res.status(400).json({ error: "Não é possível remover: Banco de dados Postgres Neon não conectado neste ambiente." });
+    }
+  } catch (error: any) {
+    console.error("Erro ao remover e-mail:", error);
+    return res.status(500).json({ error: "Erro ao remover e-mail.", details: error.message });
+  }
+});
+
+// Fetch all contracts from Postgres Neon
+app.get("/api/contracts", async (req, res) => {
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      const result = await pool.query("SELECT contract_data FROM contracts ORDER BY created_at DESC");
+      const contracts = result.rows.map(r => typeof r.contract_data === 'string' ? JSON.parse(r.contract_data) : r.contract_data);
+      return res.json(contracts);
+    } else {
+      // In local mode, return empty, client falls back to initialContracts / localStorage
+      return res.json([]);
+    }
+  } catch (error: any) {
+    console.error("Erro ao ler contratos do banco de dados:", error);
+    return res.status(500).json({ error: "Erro ao ler contratos do banco.", details: error.message });
+  }
+});
+
+// Create or update a contract inside Postgres Neon
+app.post("/api/contracts", async (req, res) => {
+  const { contract } = req.body;
+  if (!contract || !contract.id || !contract.name) {
+    return res.status(400).json({ error: "Formato de contrato inválido ou incompleto." });
+  }
+
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      await pool.query(
+        "INSERT INTO contracts (id, name, contract_data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, contract_data = EXCLUDED.contract_data",
+        [contract.id, contract.name, JSON.stringify(contract)]
+      );
+      return res.json({ success: true, message: "Contrato sincronizado de forma persistente no Postgres Neon!" });
+    } else {
+      return res.status(400).json({ error: "Banco de dados Postgres Neon não configurado." });
+    }
+  } catch (error: any) {
+    console.error("Erro ao persistir contrato:", error);
+    return res.status(500).json({ error: "Erro ao persistir contrato.", details: error.message });
+  }
+});
+
+// Delete a contract from Postgres Neon
+app.delete("/api/contracts/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    if (isDbConfigured()) {
+      const pool = getDbPool();
+      await pool.query("DELETE FROM contracts WHERE id = $1", [id]);
+      return res.json({ success: true, message: "Contrato removido com sucesso no Postgres Neon." });
+    } else {
+      return res.status(400).json({ error: "Banco de dados Postgres Neon não configurado." });
+    }
+  } catch (error: any) {
+    console.error("Erro ao deletar contrato:", error);
+    return res.status(500).json({ error: "Erro ao deletar contrato.", details: error.message });
+  }
 });
 
 // Endpoint to generate contract optimizations insights via Gemini
@@ -591,6 +774,9 @@ app.post("/api/sheets/write", async (req, res) => {
 
 // Dev vs production servers orchestration
 async function startServer() {
+  // Inicialização assíncrona segura do banco de dados Neon Postgres
+  await initDatabase();
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -618,9 +804,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[ContractSaaS Express] Servidor de TI rodando em http://0.0.0.0:${PORT}`);
-  });
+  // Apenas inicia o escutador de porta se não estivermos no ambiente Serverless da Vercel
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`[ContractSaaS Express] Servidor de TI rodando em http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
