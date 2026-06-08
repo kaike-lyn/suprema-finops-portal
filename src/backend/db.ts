@@ -1,10 +1,20 @@
-import pg from "pg";
-const { Pool } = pg;
+import { neon } from "@neondatabase/serverless";
 import { initialContracts } from "../data";
 
-let dbPool: pg.Pool | null = null;
+// Interface simplificada que imita o comportamento básico do pg Pool para o restante da aplicação.
+// Isso evita a necessidade de abrir conexões WebSocket ou TCP persistentes no ambiente Serverless da Vercel,
+// eliminando por completo problemas de "FUNCTION_INVOCATION_FAILED" causados por limites de sockets/cold starts.
+export interface SimpleQueryResult {
+  rows: any[];
+}
 
-export function getDbPool(): pg.Pool {
+export interface SimpleDbPool {
+  query: (text: string, params?: any[]) => Promise<SimpleQueryResult>;
+}
+
+let dbPool: SimpleDbPool | null = null;
+
+export function getDbPool(): SimpleDbPool {
   if (dbPool) return dbPool;
 
   const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -12,13 +22,21 @@ export function getDbPool(): pg.Pool {
     throw new Error("O segredo DATABASE_URL ou POSTGRES_URL não está configurado nas variáveis de ambiente.");
   }
 
-  // Neon requer SSL ativo para conexões TCP robustas fora da rede interna
-  dbPool = new Pool({
-    connectionString,
-    ssl: {
-      rejectUnauthorized: false
+  // Neon HTTP/fetch client
+  const sql = neon(connectionString);
+
+  dbPool = {
+    query: async (text: string, params?: any[]) => {
+      try {
+        const rows = await (sql as any)(text, params || []);
+        return { rows: Array.isArray(rows) ? rows : [] };
+      } catch (err: any) {
+        console.error("❌ [DbPool Error] Falha ao executar query HTTP no Neon:", err);
+        throw err;
+      }
     }
-  });
+  };
+
   return dbPool;
 }
 
@@ -58,7 +76,9 @@ export async function initDatabase() {
 
     // 3. Semear e-mails permitidos iniciais se a tabela estiver vazia
     const allowedRes = await pool.query("SELECT COUNT(*) FROM allowed_emails");
-    if (parseInt(allowedRes.rows[0].count, 10) === 0) {
+    const countVal = allowedRes.rows && allowedRes.rows[0] ? (allowedRes.rows[0].count || allowedRes.rows[0].COUNT || 0) : 0;
+    
+    if (parseInt(String(countVal), 10) === 0) {
       console.log("🌱 [Postgres] Semeando e-mails corporativos autorizados...");
       
       const defaultEmails = [
@@ -79,7 +99,9 @@ export async function initDatabase() {
 
     // 4. Semear contratos se a tabela estiver vazia
     const contractsRes = await pool.query("SELECT COUNT(*) FROM contracts");
-    if (parseInt(contractsRes.rows[0].count, 10) === 0) {
+    const contractsCount = contractsRes.rows && contractsRes.rows[0] ? (contractsRes.rows[0].count || contractsRes.rows[0].COUNT || 0) : 0;
+    
+    if (parseInt(String(contractsCount), 10) === 0) {
       console.log("🌱 [Postgres] Semeando contratos iniciais do sistema...");
       for (const contract of initialContracts) {
         await pool.query(
@@ -89,8 +111,9 @@ export async function initDatabase() {
       }
     }
 
-    console.log("✅ [Postgres] Tabelas criadas e alimentadas com sucesso no Neon.");
+    console.log("✅ [Postgres] Tabelas criadas e alimentadas com sucesso no Neon via HTTPS.");
   } catch (error) {
     console.error("❌ [Postgres] Erro ao inicializar tabelas ou semear dados no Postgres Neon:", error);
   }
 }
+
