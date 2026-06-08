@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { initDatabase, isDbConfigured, getDbPool } from "./src/backend/db";
+import { initDatabase, isDbConfigured, isDbActive, getDbPool, getDbProvider } from "./src/backend/db";
 
 dotenv.config();
 
@@ -59,7 +59,8 @@ app.get("/api/health", (req, res) => {
 app.get("/api/database/status", (req, res) => {
   res.json({ 
     configured: isDbConfigured(), 
-    provider: "Postgres Neon (Vercel Integration)" 
+    online: isDbActive(),
+    provider: getDbProvider()
   });
 });
 
@@ -73,7 +74,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       const result = await pool.query("SELECT * FROM allowed_emails WHERE email = $1", [trimmedEmail]);
       
@@ -113,7 +114,7 @@ app.post("/api/auth/login", async (req, res) => {
 // Fetch whitelist of emails
 app.get("/api/auth/allowed-emails", async (req, res) => {
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       const result = await pool.query("SELECT email, role, created_at as \"createdAt\" FROM allowed_emails ORDER BY created_at DESC");
       return res.json(result.rows);
@@ -143,7 +144,7 @@ app.post("/api/auth/allowed-emails", async (req, res) => {
   }
 
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       await pool.query(
         "INSERT INTO allowed_emails (email, role) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role",
@@ -165,7 +166,7 @@ app.delete("/api/auth/allowed-emails/:email", async (req, res) => {
   const trimmedEmail = (email || "").trim().toLowerCase();
 
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       await pool.query("DELETE FROM allowed_emails WHERE email = $1", [trimmedEmail]);
       return res.json({ success: true, message: "E-mail removido da whitelist com sucesso." });
@@ -181,7 +182,7 @@ app.delete("/api/auth/allowed-emails/:email", async (req, res) => {
 // Fetch all contracts from Postgres Neon
 app.get("/api/contracts", async (req, res) => {
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       const result = await pool.query("SELECT contract_data FROM contracts ORDER BY created_at DESC");
       const contracts = result.rows.map(r => typeof r.contract_data === 'string' ? JSON.parse(r.contract_data) : r.contract_data);
@@ -204,7 +205,7 @@ app.post("/api/contracts", async (req, res) => {
   }
 
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       await pool.query(
         "INSERT INTO contracts (id, name, contract_data) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, contract_data = EXCLUDED.contract_data",
@@ -224,7 +225,7 @@ app.post("/api/contracts", async (req, res) => {
 app.delete("/api/contracts/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    if (isDbConfigured()) {
+    if (isDbActive()) {
       const pool = getDbPool();
       await pool.query("DELETE FROM contracts WHERE id = $1", [id]);
       return res.json({ success: true, message: "Contrato removido com sucesso no Postgres Neon." });

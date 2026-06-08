@@ -25,7 +25,7 @@ interface WhitelistConfigProps {
 
 export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: WhitelistConfigProps) {
   const [emails, setEmails] = useState<AllowedEmail[]>([]);
-  const [dbStatus, setDbStatus] = useState<{ configured: boolean; provider: string } | null>(null);
+  const [dbStatus, setDbStatus] = useState<{ configured: boolean; online: boolean; provider: string } | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [adding, setAdding] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
@@ -188,12 +188,14 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
           </div>
           <div>
             <h3 className={`font-bold tracking-tight text-base ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-              Estatuto do Banco de Dados Postgres Vercel/Neon
+              Estatuto do Banco de Dados Postgres
             </h3>
             <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-              {dbStatus?.configured 
-                ? `Conectado com sucesso ao serviço Serverless PostgreSQL (${dbStatus?.provider}).`
-                : 'Rodando em modo Simulador em Memória (Sem DATABASE_URL nos Segredos).'
+              {dbStatus?.online 
+                ? `Conectado com sucesso ao serviço PostgreSQL (${dbStatus?.provider}).`
+                : dbStatus?.configured
+                  ? `Configurado (${dbStatus?.provider}), mas não foi possível estabelecer conexão (modo de segurança ativo).`
+                  : 'Rodando em modo Simulador em Memória (Sem DATABASE_URL nos Segredos).'
               }
             </p>
           </div>
@@ -201,12 +203,14 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
 
         <div className="flex items-center space-x-2 shrink-0">
           <div className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold tracking-wide uppercase ${
-            dbStatus?.configured 
+            dbStatus?.online 
               ? 'bg-emerald-950/25 border-emerald-900/30 text-emerald-400' 
-              : 'bg-amber-950/25 border-amber-900/30 text-amber-400'
+              : dbStatus?.configured
+                ? 'bg-red-950/25 border-red-900/30 text-red-400'
+                : 'bg-amber-950/25 border-amber-900/30 text-amber-400'
           }`}>
-            <span className={`w-2 h-2 rounded-full animate-pulse ${dbStatus?.configured ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-            <span>{dbStatus?.configured ? 'Ativo (Vercel Neon Live)' : 'Modo Demonstração'}</span>
+            <span className={`w-2 h-2 rounded-full ${dbStatus?.online ? 'bg-emerald-400 animate-pulse' : dbStatus?.configured ? 'bg-red-400' : 'bg-amber-400'}`} />
+            <span>{dbStatus?.online ? `Ativo (${dbStatus?.provider})` : dbStatus?.configured ? 'Offline / Inacessível' : 'Modo Demonstração'}</span>
           </div>
 
           <button 
@@ -224,15 +228,37 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
         </div>
       </div>
 
-      {dbStatus && !dbStatus.configured && (
+      {dbStatus && !dbStatus.online && (
         <div className={`p-4 rounded-xl border flex items-start gap-3.5 ${
-          isDarkMode ? 'bg-indigo-950/20 border-indigo-900/45 text-indigo-300' : 'bg-indigo-50 border-indigo-150 text-indigo-900'
+          dbStatus.configured 
+            ? 'bg-red-950/20 border-red-900/40 text-red-300'
+            : isDarkMode ? 'bg-indigo-950/20 border-indigo-900/45 text-indigo-300' : 'bg-indigo-50 border-indigo-150 text-indigo-900'
         }`}>
-          <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5 text-indigo-500" />
+          {dbStatus.configured ? (
+            <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5 text-red-400" />
+          ) : (
+            <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5 text-indigo-500" />
+          )}
           <div className="space-y-1">
-            <h4 className="font-bold">Como salvar de forma permanente no banco de dados Postgres?</h4>
+            <h4 className="font-bold">
+              {dbStatus.configured 
+                ? 'O banco de dados Postgres está configurado, mas inacessível' 
+                : 'Como salvar de forma permanente no banco de dados Postgres (Supabase / Neon)?'
+              }
+            </h4>
             <p className="text-xs leading-relaxed">
-              Para salvar e-mails corporativos e contratos de forma robusta e definitiva no Neon Postgres, basta criar um banco de dados relacional grátis na sua conta <strong>Vercel (Storage &gt; Postgres / Neon)</strong> e copiar a variável <strong>DATABASE_URL</strong> para o painel de variáveis de ambiente do seu projeto no Vercel ou na área de customização do painel local. O sistema detectará automaticamente a conexão sem precisar reinstalar nada!
+              {dbStatus.configured ? (
+                <span>
+                  O sistema tentou se conectar a <strong>{dbStatus.provider}</strong> usando as credenciais fornecidas, mas a conexão falhou ou expirou (timeout). 
+                  Se você está migrando para o <strong>Supabase</strong>, certifique-se de que a variável de ambiente <strong>DATABASE_URL</strong> contêm o link correto do seu projeto Supabase (com a senha correta de banco de dados). Recomendamos usar a URL de pool de conexão em modo Session ou Transaction na porta 6543 ou 5432 fornecido pelo painel do Supabase.
+                </span>
+              ) : (
+                <span>
+                  Para salvar e-mails corporativos e contratos de forma robusta e definitiva no <strong>Supabase</strong> ou outro provedor, 
+                  basta criar seu banco de dados, copiar a string de conexão <strong>DATABASE_URL</strong> (ou <strong>POSTGRES_URL</strong>) 
+                  para os segredos das Variáveis de Ambiente do seu projeto do AI Studio e da Vercel. O sistema detectará automaticamente e criará as tabelas de forma transparente!
+                </span>
+              )}
             </p>
           </div>
         </div>

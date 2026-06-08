@@ -1,9 +1,7 @@
-import { neon } from "@neondatabase/serverless";
+import pg from "pg";
+const { Pool } = pg;
 import { initialContracts } from "../data";
 
-// Interface simplificada que imita o comportamento básico do pg Pool para o restante da aplicação.
-// Isso evita a necessidade de abrir conexões WebSocket ou TCP persistentes no ambiente Serverless da Vercel,
-// eliminando por completo problemas de "FUNCTION_INVOCATION_FAILED" causados por limites de sockets/cold starts.
 export interface SimpleQueryResult {
   rows: any[];
 }
@@ -12,9 +10,10 @@ export interface SimpleDbPool {
   query: (text: string, params?: any[]) => Promise<SimpleQueryResult>;
 }
 
-let dbPool: SimpleDbPool | null = null;
+let dbPool: pg.Pool | null = null;
+let databaseIsOnline = false;
 
-export function getDbPool(): SimpleDbPool {
+export function getDbPool(): pg.Pool {
   if (dbPool) return dbPool;
 
   const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -22,20 +21,21 @@ export function getDbPool(): SimpleDbPool {
     throw new Error("O segredo DATABASE_URL ou POSTGRES_URL não está configurado nas variáveis de ambiente.");
   }
 
-  // Neon HTTP/fetch client
-  const sql = neon(connectionString);
+  // Configurações otimizadas para ambiente Serverless (Vercel) e alta robustez (Supabase / Neon)
+  dbPool = new Pool({
+    connectionString,
+    ssl: connectionString.includes("localhost") || connectionString.includes("127.0.0.1") ? false : {
+      rejectUnauthorized: false
+    },
+    max: 8, // Limite conservador para evitar fadiga de sockets em serverless
+    idleTimeoutMillis: 10000, // Fecha conexões ociosas em 10s
+    connectionTimeoutMillis: 3000, // Tempo limite rápido de 3s para falhar graciosamente se offline
+  });
 
-  dbPool = {
-    query: async (text: string, params?: any[]) => {
-      try {
-        const rows = await (sql as any)(text, params || []);
-        return { rows: Array.isArray(rows) ? rows : [] };
-      } catch (err: any) {
-        console.error("❌ [DbPool Error] Falha ao executar query HTTP no Neon:", err);
-        throw err;
-      }
-    }
-  };
+  // Captura erros assíncronos no Pool para evitar que o Node quebre (crash involuntário)
+  dbPool.on("error", (err) => {
+    console.error("🚨 [Postgres Pool Error Async] Um erro ocorreu ociosamente no pool do banco de dados:", err);
+  });
 
   return dbPool;
 }
@@ -45,15 +45,53 @@ export function isDbConfigured(): boolean {
   return !!(url && url !== "" && !url.includes("placeholder"));
 }
 
+export function isDbActive(): boolean {
+  return isDbConfigured() && databaseIsOnline;
+}
+
+export function getDbProvider(): string {
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  if (!url) return "Desconhecido";
+  if (url.includes("supabase.co") || url.includes("supabase.com") || url.includes("supabase.net") || url.includes("supabase")) {
+    return "Supabase Database";
+  }
+  if (url.includes("neon") || url.includes("neondatabase")) {
+    return "Neon Serverless";
+  }
+  if (url.includes("vercel-storage") || url.includes("vercel-postgres")) {
+    return "Vercel Postgres";
+  }
+  return "PostgreSQL (Provedor Externo)";
+}
+
 export async function initDatabase() {
   if (!isDbConfigured()) {
     console.warn("⚠️ [Postgres] DATABASE_URL não definido ou inválido. O portal usará modo de demonstração em memória.");
+    databaseIsOnline = false;
     return;
   }
 
-  console.log("🔄 [Postgres] Inicializando banco de dados Neon/Vercel...");
+  console.log(`🔄 [Postgres] Conectando ao provedor: ${getDbProvider()}...`);
   const pool = getDbPool();
 
+  try {
+    // Teste inicial rápido com timeout estrito de 2.5s para evitar que a Vercel trave totalmente
+    const checkPromise = pool.query("SELECT 1");
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout de conexão esgotado (2.5s).")), 2500)
+    );
+
+    await Promise.race([checkPromise, timeoutPromise]);
+    console.log(`📶 [Postgres] Teste de conectividade bem-sucedido com ${getDbProvider()}!`);
+    databaseIsOnline = true;
+  } catch (error: any) {
+    console.error(`❌ [Postgres Offline] Falha de conexão inicial ao banco de dados Postgres (${getDbProvider()}):`, error.message || error);
+    console.warn("⚠️ O portal continuará rodando com o MODO DEMONSTRAÇÃO EM MEMÓRIA ativo para manter o serviço Vercel estável.");
+    databaseIsOnline = false;
+    return; // Interrompe para não lançar erros fatais
+  }
+
+  // Agora que sabemos que o banco está online, podemos rodar as queries DDL criadoras de tabela
   try {
     // 1. Criar tabela de e-mails autorizados (Whitelist)
     await pool.query(`
@@ -111,9 +149,10 @@ export async function initDatabase() {
       }
     }
 
-    console.log("✅ [Postgres] Tabelas criadas e alimentadas com sucesso no Neon via HTTPS.");
-  } catch (error) {
-    console.error("❌ [Postgres] Erro ao inicializar tabelas ou semear dados no Postgres Neon:", error);
+    console.log(`✅ [Postgres] Banco de dados inicializado com sucesso no ${getDbProvider()}.`);
+  } catch (error: any) {
+    console.error("❌ [Postgres Schema Error] Falha ao criar tabelas ou semear registros:", error);
+    // Não quebramos de propósito, para o portal rodar em memória tolerando o erro
+    databaseIsOnline = false;
   }
 }
-
