@@ -11,6 +11,25 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Middleware de normalização de URLs no Vercel (previne que caminhos reescritos fiquem travados)
+app.use((req, res, next) => {
+  const originalUrl = req.url;
+  // Se o caminho foi reescrito pela Vercel incluindo os arquivos de entrypoint, normaliza para /api
+  if (req.url.includes('/api/index.ts')) {
+    req.url = req.url.replace('/api/index.ts', '/api');
+  } else if (req.url.includes('/api/index.js')) {
+    req.url = req.url.replace('/api/index.js', '/api');
+  } else if (req.url.startsWith('/api/index/')) {
+    req.url = req.url.replace('/api/index/', '/api/');
+  }
+  
+  if (req.url.startsWith('/api//')) {
+    req.url = req.url.replace('/api//', '/api/');
+  }
+  
+  next();
+});
+
 // Lazy-initialized Gemini client
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
@@ -773,8 +792,10 @@ app.post("/api/sheets/write", async (req, res) => {
 
 // Dev vs production servers orchestration
 async function startServer() {
-  // Inicialização assíncrona segura do banco de dados Neon Postgres
-  await initDatabase();
+  // Inicialização assíncrona segura do banco de dados Neon Postgres em plano de fundo (não bloqueante para o cold start)
+  initDatabase().catch(err => {
+    console.error("❌ Falha na inicialização em plano de fundo do banco de dados:", err);
+  });
 
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
@@ -797,11 +818,15 @@ async function startServer() {
       }
     });
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    // Servir arquivos estáticos apenas se NÃO estivermos no ambiente Serverless da Vercel
+    // No Vercel, a própria infraestrutura de CDN cuida de servir a pasta build localmente (dist/)
+    if (!process.env.VERCEL) {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
   // Apenas inicia o escutador de porta se não estivermos no ambiente Serverless da Vercel
