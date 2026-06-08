@@ -1,5 +1,8 @@
-import { Pool } from "@neondatabase/serverless";
+import { Pool, neonConfig } from "@neondatabase/serverless";
+import ws from "ws";
 import { initialContracts } from "../data";
+
+neonConfig.webSocketConstructor = ws;
 
 let dbPool: Pool | null = null;
 
