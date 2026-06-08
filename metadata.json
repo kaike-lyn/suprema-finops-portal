@@ -1,0 +1,6 @@
+{
+  "name": "Gestão de Contratos Suprema",
+  "description": "Dashboard SaaS inteligente e dinâmico para acompanhamento de custos, licenças, criticidade e vencimentos de contratos de serviços de TI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

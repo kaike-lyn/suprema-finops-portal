@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand: var(--brand-color);
+  --color-brand-hover: var(--brand-color-hover);
+  --color-brand-bg: var(--brand-color-bg);
+  --color-brand-border: var(--brand-color-border);
+  --color-brand-glow: var(--brand-color-glow);
+  --color-brand-text: var(--brand-text);
+}
+
+/* Custom premium, highly legible text selection across both light and dark modes */
+::selection {
+  background-color: color-mix(in srgb, var(--brand-color, #06b6d4) 30%, rgba(6, 182, 212, 0.3)) !important;
+  color: inherit !important;
+}
+
+::-moz-selection {
+  background-color: color-mix(in srgb, var(--brand-color, #06b6d4) 30%, rgba(6, 182, 212, 0.3)) !important;
+  color: inherit !important;
+}
+
