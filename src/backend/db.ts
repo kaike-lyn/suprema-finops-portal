@@ -1,12 +1,10 @@
-import { Pool, neonConfig } from "@neondatabase/serverless";
-import ws from "ws";
+import pg from "pg";
+const { Pool } = pg;
 import { initialContracts } from "../data";
 
-neonConfig.webSocketConstructor = ws;
+let dbPool: pg.Pool | null = null;
 
-let dbPool: Pool | null = null;
-
-export function getDbPool(): Pool {
+export function getDbPool(): pg.Pool {
   if (dbPool) return dbPool;
 
   const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -14,7 +12,13 @@ export function getDbPool(): Pool {
     throw new Error("O segredo DATABASE_URL ou POSTGRES_URL não está configurado nas variáveis de ambiente.");
   }
 
-  dbPool = new Pool({ connectionString });
+  // Neon requer SSL ativo para conexões TCP robustas fora da rede interna
+  dbPool = new Pool({
+    connectionString,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
   return dbPool;
 }
 
