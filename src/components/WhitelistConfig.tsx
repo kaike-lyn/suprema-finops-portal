@@ -51,10 +51,26 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
       // 2. Load whitelist
       const emailsRes = await fetch('/api/auth/allowed-emails');
       if (emailsRes.ok) {
-        const emailsData = await emailsRes.json();
-        setEmails(emailsData);
+        const contentType = emailsRes.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const emailsData = await emailsRes.json();
+          setEmails(emailsData);
+        } else {
+          throw new Error('O servidor de API não retornou um formato JSON válido.');
+        }
       } else {
-        throw new Error('Falha ao ler whitelist de e-mails.');
+        let errorMsg = 'Falha ao ler whitelist de e-mails.';
+        try {
+          const contentType = emailsRes.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const errData = await emailsRes.json();
+            if (errData.error) errorMsg = errData.error;
+          } else {
+            const txt = await emailsRes.text();
+            if (txt) errorMsg = txt.slice(0, 150);
+          }
+        } catch (_) {}
+        throw new Error(errorMsg);
       }
     } catch (err: any) {
       console.error(err);
@@ -92,7 +108,15 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
         body: JSON.stringify({ email: emailToTrim, role: newRole })
       });
 
-      const data = await response.json();
+      let data: any = { error: 'Ocorreu um erro desconhecido.' };
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const textError = await response.text();
+        data = { error: textError || `Erro de requisição (Código ${response.status})` };
+      }
+
       if (response.ok) {
         setSuccess(`E-mail ${emailToTrim} autorizado com sucesso.`);
         setNewEmail('');
@@ -126,8 +150,18 @@ export default function WhitelistConfig({ isDarkMode, themeStyles, userRole }: W
           setSuccess(`Autorização do e-mail ${emailToDelete} revogada.`);
           loadData();
         } else {
-          const data = await response.json();
-          setError(data.error || 'Falha ao excluir e-mail.');
+          let errorMsg = 'Falha ao excluir e-mail.';
+          try {
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+              const data = await response.json();
+              if (data.error) errorMsg = data.error;
+            } else {
+              const txt = await response.text();
+              if (txt) errorMsg = txt.slice(0, 150);
+            }
+          } catch (_) {}
+          setError(errorMsg);
         }
       } catch (err: any) {
         setError('Erro de rede ao tentar remover e-mail: ' + err.message);
